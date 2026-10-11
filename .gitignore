@@ -1,0 +1,42 @@
+# Node / frontend
+node_modules/
+frontend/node_modules/
+backend-node/node_modules/
+frontend/dist/
+backend-node/.env
+
+# Python / rag service
+rag-service/.venv/
+rag-service/__pycache__/
+rag-service/.index/
+rag-service/logs/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+backend-node/logs/
+*.log
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Git / repo metadata
+.git/
+
+# Build output
+coverage/
+.npm/
+
+# Mongo / local DB data
+*.pid
+mongodata/
