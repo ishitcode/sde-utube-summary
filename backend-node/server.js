@@ -212,7 +212,9 @@ app.post('/api/videos/analyze', async (req, res) => {
     const sameStoredRange = selectedRange
       ? storedRange?.start === selectedRange.start && storedRange?.end === selectedRange.end
       : !storedRange;
-    if (existing && sameStoredRange && isFreshWithinTtl(existing) && !refresh) {
+    const sameStoredLanguages = existing?.transcript_language === transcript_language
+      && existing?.output_language === output_language;
+    if (existing && sameStoredRange && sameStoredLanguages && isFreshWithinTtl(existing) && !refresh) {
       logger.info(`DB CACHE HIT analyze request_id=${req.requestId}`, { videoId });
       setCachedSummary(cacheKey, existing.toObject());
       return res.status(200).json({

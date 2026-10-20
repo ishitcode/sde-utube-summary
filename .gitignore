@@ -40,3 +40,5 @@ coverage/
 # Mongo / local DB data
 *.pid
 mongodata/
+
+uv.lock

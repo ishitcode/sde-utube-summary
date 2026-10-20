@@ -412,7 +412,11 @@ function LectureWorkspacePage({ lecture }: { lecture: Lecture | null }) {
         <div className="panel">
           <div className="panel-heading">
             <h3>Summary</h3>
-            <span className="badge">Structured</span>
+            <span className="badge">
+              {lecture?.summary?.summary_range
+                ? `${formatTimestamp(lecture.summary.summary_range.start)} - ${formatTimestamp(lecture.summary.summary_range.end)}`
+                : 'Structured'}
+            </span>
           </div>
           <p>{lecture?.summary?.quick_summary || 'No summary available yet'}</p>
           <ul className="list-block">
