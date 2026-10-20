@@ -13,6 +13,7 @@ export type Lecture = {
     detailed_notes?: string[]
     key_concepts?: string[]
     timestamp_references?: Array<{ start: number; end: number; label: string }>
+    summary_range?: { start: number; end: number } | null
   }
   transcript?: Array<{ text: string; start: number; end: number; language?: string | null; source?: string | null }>
   message?: string

@@ -2,14 +2,25 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
-from fastapi import FastAPI, Request
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, Field, model_validator
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT_DIR / '.env')
+
+if os.getenv('LANGSMITH_API_KEY'):
+    os.environ.setdefault('LANGSMITH_TRACING', 'true')
+    os.environ.setdefault('LANGSMITH_PROJECT', 'youtube-summary-studio')
 
 app = FastAPI(title='Youtube Summary RAG Service', version='1.0.0')
 
@@ -38,6 +49,93 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     video_id: str | None = None
     limit: int = 3
+
+
+class SummaryRequest(BaseModel):
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    output_language: str = 'English'
+    summary_start: float | None = Field(default=None, ge=0)
+    summary_end: float | None = Field(default=None, ge=0)
+    request_id: str | None = None
+
+    @model_validator(mode='after')
+    def validate_summary_range(self):
+        if (self.summary_start is None) != (self.summary_end is None):
+            raise ValueError('Both summary start and end times are required.')
+        if self.summary_start is not None and self.summary_end <= self.summary_start:
+            raise ValueError('Summary end time must be greater than the start time.')
+        return self
+
+
+class SummaryOutput(BaseModel):
+    quick_summary: str
+    detailed_notes: list[str]
+    key_concepts: list[str]
+    timestamp_references: list[dict[str, Any]]
+
+
+class SummaryState(TypedDict):
+    segments: list[dict[str, Any]]
+    output_language: str
+    request_id: str | None
+    summary: dict[str, Any]
+
+
+def _summarize_node(state: SummaryState) -> dict[str, Any]:
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=503, detail='Set GEMINI_API_KEY to enable LangChain summaries.')
+
+    model_name = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+    logger.info(
+        'MODEL_INVOKE_START agent=lecture_summary provider=google model=%s request_id=%s segments=%s',
+        model_name,
+        state.get('request_id'),
+        len(state['segments']),
+    )
+    transcript = '\n'.join(
+        f"[{float(segment.get('start', 0) or 0):.2f}s - {float(segment.get('end', 0) or 0):.2f}s] {str(segment.get('text', '')).strip()}"
+        for segment in state['segments']
+        if str(segment.get('text', '')).strip()
+    )
+    model = ChatGoogleGenerativeAI(
+        model=model_name,
+        google_api_key=api_key,
+        temperature=0.2,
+    ).with_structured_output(SummaryOutput)
+
+    try:
+        result = model.invoke(
+            [
+                ('system', 'You are an expert tutor. Summarize only facts supported by the transcript. Keep timestamps aligned to the source.'),
+                (
+                    'human',
+                    f'Write in {state["output_language"]}. Include 2-4 detailed notes and 3-6 key concepts. '
+                    f'Use the provided timestamps for timestamp references.\n\nTranscript:\n{transcript}',
+                ),
+            ]
+        )
+    except Exception:
+        logger.exception(
+            'MODEL_INVOKE_FAILED agent=lecture_summary provider=google model=%s request_id=%s',
+            model_name,
+            state.get('request_id'),
+        )
+        raise
+
+    logger.info(
+        'MODEL_INVOKE_SUCCESS agent=lecture_summary provider=google model=%s request_id=%s',
+        model_name,
+        state.get('request_id'),
+    )
+    return {'summary': result.model_dump()}
+
+
+summary_graph = StateGraph(SummaryState)
+summary_graph.add_node('summarize', _summarize_node)
+summary_graph.add_edge(START, 'summarize')
+summary_graph.add_edge('summarize', END)
+summary_agent = summary_graph.compile()
 
 
 @app.middleware('http')
@@ -147,3 +245,50 @@ def search_segments(payload: SearchRequest) -> dict:
     except Exception as exc:
         logger.exception('SEARCH_FAILED video_id=%s query=%s', payload.video_id, payload.query[:120])
         raise exc
+
+
+@app.post('/api/summarize')
+def summarize_segments(payload: SummaryRequest, request: Request) -> dict:
+    segments = [
+        segment
+        for segment in payload.segments
+        if str(segment.get('text', '')).strip()
+        and (
+            payload.summary_start is None
+            or (
+                float(segment.get('end', segment.get('start', 0)) or 0) > payload.summary_start
+                and float(segment.get('start', 0) or 0) < payload.summary_end
+            )
+        )
+    ]
+    if not segments:
+        raise HTTPException(status_code=422, detail='No transcript is available in the selected time range.')
+
+    request_id = payload.request_id or request.headers.get('x-request-id') or uuid.uuid4().hex
+    logger.info(
+        'SUMMARY_AGENT_START agent=lecture_summary request_id=%s segments=%s output_language=%s range=%s',
+        request_id,
+        len(segments),
+        payload.output_language,
+        (payload.summary_start, payload.summary_end),
+    )
+    state = summary_agent.invoke(
+        {
+            'segments': segments,
+            'output_language': payload.output_language,
+            'request_id': request_id,
+        },
+        config={
+            'run_name': 'youtube_lecture_summary',
+            'metadata': {'agent': 'lecture_summary', 'request_id': request_id},
+            'tags': ['youtube-summary', 'langgraph'],
+        },
+    )
+    summary = state['summary']
+    summary['summary_range'] = (
+        {'start': payload.summary_start, 'end': payload.summary_end}
+        if payload.summary_start is not None
+        else None
+    )
+    logger.info('SUMMARY_AGENT_SUCCESS agent=lecture_summary request_id=%s', request_id)
+    return summary

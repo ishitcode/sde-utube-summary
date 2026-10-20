@@ -27,6 +27,10 @@ const videoSchema = new mongoose.Schema(
       quick_summary: { type: String, default: '' },
       detailed_notes: [{ type: String }],
       key_concepts: [{ type: String }],
+      summary_range: {
+        start: { type: Number },
+        end: { type: Number },
+      },
       timestamp_references: [
         {
           start: Number,

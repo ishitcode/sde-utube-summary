@@ -92,7 +92,7 @@ function App() {
     setSelectedLecture(hydrated ?? lecture)
   }
 
-  const handleAnalyzeUrl = async (url: string, refresh = true) => {
+  const handleAnalyzeUrl = async (url: string, summaryStart?: number, summaryEnd?: number, refresh = true) => {
     setLoading(true)
     setError(null)
     try {
@@ -100,6 +100,8 @@ function App() {
         url,
         transcript_language: 'auto',
         output_language: 'English',
+        summary_start: summaryStart,
+        summary_end: summaryEnd,
         refresh,
       })
       setSelectedLecture(data)
@@ -286,14 +288,36 @@ function ImportPage({
 }: {
   loading: boolean
   error: string | null
-  onAnalyze: (url: string) => Promise<any>
+  onAnalyze: (url: string, summaryStart?: number, summaryEnd?: number) => Promise<any>
 }) {
   const [url, setUrl] = useState('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+  const [summaryStart, setSummaryStart] = useState('')
+  const [summaryEnd, setSummaryEnd] = useState('')
+  const [rangeError, setRangeError] = useState<string | null>(null)
   const [result, setResult] = useState<Lecture | null>(null)
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
-    const outcome = await onAnalyze(url)
+    setRangeError(null)
+    if (Boolean(summaryStart) !== Boolean(summaryEnd)) {
+      setRangeError('Enter both start and end times, or leave both blank.')
+      return
+    }
+
+    let startSeconds: number | undefined
+    let endSeconds: number | undefined
+    if (summaryStart && summaryEnd) {
+      const parsedStart = parseTimeInput(summaryStart)
+      const parsedEnd = parseTimeInput(summaryEnd)
+      if (parsedStart === null || parsedEnd === null || parsedEnd <= parsedStart) {
+        setRangeError('Use valid times in mm:ss or hh:mm:ss format, with the end after the start.')
+        return
+      }
+      startSeconds = parsedStart
+      endSeconds = parsedEnd
+    }
+
+    const outcome = await onAnalyze(url, startSeconds, endSeconds)
     if (outcome) setResult(outcome)
   }
 
@@ -320,7 +344,30 @@ function ImportPage({
               {loading ? 'Analyzing...' : 'Analyze lecture'}
             </button>
           </div>
-          {error && <p className="error-message">{error}</p>}
+          <p className="eyebrow">Summarize a section (optional)</p>
+          <div className="input-row">
+            <label htmlFor="summary-start">
+              Start time
+              <input
+                id="summary-start"
+                inputMode="numeric"
+                placeholder="00:00"
+                value={summaryStart}
+                onChange={(event) => setSummaryStart(event.target.value)}
+              />
+            </label>
+            <label htmlFor="summary-end">
+              End time
+              <input
+                id="summary-end"
+                inputMode="numeric"
+                placeholder="05:30"
+                value={summaryEnd}
+                onChange={(event) => setSummaryEnd(event.target.value)}
+              />
+            </label>
+          </div>
+          {(rangeError || error) && <p className="error-message">{rangeError || error}</p>}
         </form>
       </div>
 
@@ -496,6 +543,15 @@ function formatTimestamp(seconds: number): string {
   const mins = String(Math.floor(total / 60)).padStart(2, '0')
   const secs = String(total % 60).padStart(2, '0')
   return `${mins}:${secs}`
+}
+
+function parseTimeInput(value: string): number | null {
+  const parts = value.split(':')
+  if (parts.length < 2 || parts.length > 3 || parts.some((part) => !/^\d+$/.test(part))) return null
+
+  const numbers = parts.map(Number)
+  if (numbers.slice(1).some((part) => part >= 60)) return null
+  return numbers.reduce((total, part) => total * 60 + part, 0)
 }
 
 export default App

@@ -5,7 +5,7 @@ const { connectDB } = require('./src/config/db');
 const Video = require('./src/models/Video');
 const logger = require('./src/utils/logger');
 const { createCacheStore } = require('./src/utils/cache');
-const { fetchTranscript, generateSummaryFromTranscript } = require('./src/services/llmSummary');
+const { fetchTranscript, generateSummaryFromTranscript, selectSummaryTranscript } = require('./src/services/llmSummary');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -43,8 +43,8 @@ app.use((error, req, res, next) => {
   res.status(500).json({ detail: 'Internal server error' });
 });
 
-function normalizeCacheKey(videoId, transcriptLanguage = 'auto', outputLanguage = 'English') {
-  return JSON.stringify({ videoId, transcriptLanguage, outputLanguage });
+function normalizeCacheKey(videoId, transcriptLanguage = 'auto', outputLanguage = 'English', summaryStart, summaryEnd) {
+  return JSON.stringify({ videoId, transcriptLanguage, outputLanguage, summaryStart, summaryEnd });
 }
 
 function isFreshWithinTtl(record) {
@@ -171,18 +171,30 @@ app.post('/api/videos/analyze', async (req, res) => {
   let videoId = null;
 
   try {
-    const { url, transcript_language = 'auto', output_language = 'English', refresh = false } = req.body || {};
+    const {
+      url,
+      transcript_language = 'auto',
+      output_language = 'English',
+      summary_start,
+      summary_end,
+      refresh = false,
+    } = req.body || {};
     logger.info(`BUSINESS LOGIC analyze_start request_id=${req.requestId}`, {
       url: url ? String(url).slice(0, 120) : null,
       transcript_language,
       output_language,
+      summary_start,
+      summary_end,
       refresh,
     });
 
     videoId = validateYouTubeUrl(url);
     logger.info(`BUSINESS LOGIC url_validated request_id=${req.requestId}`, { videoId });
 
-    const cacheKey = normalizeCacheKey(videoId, transcript_language, output_language);
+    const selectedRange = summary_start === undefined && summary_end === undefined
+      ? null
+      : { start: Number(summary_start), end: Number(summary_end) };
+    const cacheKey = normalizeCacheKey(videoId, transcript_language, output_language, selectedRange?.start, selectedRange?.end);
     const cached = getCachedSummary(cacheKey, Boolean(refresh));
     if (cached && !refresh) {
       logger.info(`CACHE HIT analyze request_id=${req.requestId}`, { videoId, cacheKey });
@@ -196,7 +208,11 @@ app.post('/api/videos/analyze', async (req, res) => {
     const existing = await Video.findOne({ video_id: videoId });
     logger.info(`DB LOOKUP analyze request_id=${req.requestId}`, { videoId, found: Boolean(existing) });
 
-    if (existing && isFreshWithinTtl(existing) && !refresh) {
+    const storedRange = existing?.summary?.summary_range || null;
+    const sameStoredRange = selectedRange
+      ? storedRange?.start === selectedRange.start && storedRange?.end === selectedRange.end
+      : !storedRange;
+    if (existing && sameStoredRange && isFreshWithinTtl(existing) && !refresh) {
       logger.info(`DB CACHE HIT analyze request_id=${req.requestId}`, { videoId });
       setCachedSummary(cacheKey, existing.toObject());
       return res.status(200).json({
@@ -208,7 +224,17 @@ app.post('/api/videos/analyze', async (req, res) => {
     const transcript = await buildTranscript(videoId, transcript_language);
     logger.info(`TRANSCRIPT BUILT analyze request_id=${req.requestId}`, { videoId, segmentCount: transcript.length });
 
-    const summary = await generateSummaryFromTranscript(transcript, output_language);
+    const summaryTranscript = selectSummaryTranscript(transcript, selectedRange?.start, selectedRange?.end);
+    logger.info(`SUMMARY RANGE SELECTED analyze request_id=${req.requestId}`, {
+      videoId,
+      segmentCount: summaryTranscript.length,
+      summaryRange: selectedRange,
+    });
+    const summary = await generateSummaryFromTranscript(summaryTranscript, output_language, {
+      summaryStart: selectedRange?.start,
+      summaryEnd: selectedRange?.end,
+      requestId: req.requestId,
+    });
     logger.info(`LLM SUMMARY GENERATED analyze request_id=${req.requestId}`, {
       videoId,
       quickSummaryLength: summary.quick_summary.length,
@@ -264,7 +290,7 @@ app.post('/api/videos/analyze', async (req, res) => {
       stack: error.stack,
       requestBody: req.body,
     });
-    res.status(400).json({ detail: error.message || 'Unable to analyze video.' });
+    res.status(error.statusCode || 400).json({ detail: error.message || 'Unable to analyze video.' });
   }
 });
 

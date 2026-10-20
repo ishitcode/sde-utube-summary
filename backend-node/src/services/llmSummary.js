@@ -1,7 +1,6 @@
 const { YoutubeTranscript } = require('youtube-transcript');
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://localhost:8001';
 
 function normalizeTranscriptSegments(transcript, preferredLanguage = 'auto') {
   return transcript.map((item, index) => ({
@@ -24,100 +23,45 @@ async function fetchTranscript(videoId, preferredLanguage = 'auto') {
   }
 }
 
-function parseGeminiSummaryResponse(rawText) {
-  const text = String(rawText || '').trim();
-  if (!text) {
-    throw new Error('Empty response from Gemini summary model.');
+function selectSummaryTranscript(transcript, summaryStart, summaryEnd) {
+  if (summaryStart === undefined && summaryEnd === undefined) return transcript;
+  if (summaryStart === undefined || summaryEnd === undefined) {
+    throw new Error('Both summary start and end times are required.');
+  }
+  if (!Number.isFinite(summaryStart) || !Number.isFinite(summaryEnd) || summaryStart < 0 || summaryEnd <= summaryStart) {
+    throw new Error('Summary end time must be greater than a non-negative start time.');
   }
 
-  const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  const candidate = fencedMatch ? fencedMatch[1] : text;
-  const jsonText = candidate.trim();
-  const parsed = JSON.parse(jsonText);
-
-  return {
-    quick_summary: String(parsed.quick_summary || 'This lecture was summarized successfully from the transcript.').trim(),
-    detailed_notes: Array.isArray(parsed.detailed_notes) ? parsed.detailed_notes.map((item) => String(item)) : [],
-    key_concepts: Array.isArray(parsed.key_concepts) ? parsed.key_concepts.map((item) => String(item)) : [],
-    timestamp_references: Array.isArray(parsed.timestamp_references)
-      ? parsed.timestamp_references.map((entry) => ({
-          start: Number(entry.start || 0),
-          end: Number(entry.end || 0),
-          label: String(entry.label || 'Key segment'),
-        }))
-      : [],
-  };
+  const selected = transcript.filter((segment) => segment.end > summaryStart && segment.start < summaryEnd);
+  if (!selected.length) throw new Error('No transcript is available in the selected time range.');
+  return selected;
 }
 
-async function generateSummaryFromTranscript(transcript, outputLanguage = 'English') {
-  if (!GEMINI_API_KEY) {
-    return {
-      quick_summary: 'Transcript fetched successfully. Add GEMINI_API_KEY to generate a model-based summary.',
-      detailed_notes: [
-        'The lecture transcript was retrieved and is ready for AI summarization.',
-        'Set GEMINI_API_KEY to enable live LLM summarization.',
-      ],
-      key_concepts: ['Transcript loaded', 'LLM summary pending', 'Study notes ready'],
-      timestamp_references: transcript.slice(0, 3).map((segment) => ({
-        start: segment.start,
-        end: segment.end,
-        label: 'Lecture segment',
-      })),
-    };
-  }
-
-  const transcriptText = transcript
-    .map((segment, index) => `[${index}] ${segment.start}s - ${segment.text}`)
-    .join('\n');
-
-  const prompt = `You are an expert tutor and educator. Summarize the transcript below for a student studying the lecture.
-
-Return ONLY valid JSON with this exact structure:
-{
-  "quick_summary": "string",
-  "detailed_notes": ["string", "string"],
-  "key_concepts": ["string", "string"],
-  "timestamp_references": [{"start": number, "end": number, "label": "string"}]
-}
-
-Requirements:
-- Keep the summary concise and study-friendly.
-- Write in ${outputLanguage}.
-- Use accurate facts only from the transcript.
-- Include 2-4 detailed notes.
-- Include 3-6 key concepts.
-- Keep transcript timestamps aligned to the actual lecture.
-
-Transcript:
-${transcriptText}`;
-
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
+async function generateSummaryFromTranscript(transcript, outputLanguage = 'English', options = {}) {
+  const response = await fetch(`${RAG_SERVICE_URL}/api/summarize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.2,
-        topP: 0.8,
-      },
+      segments: transcript,
+      output_language: outputLanguage,
+      summary_start: options.summaryStart,
+      summary_end: options.summaryEnd,
+      request_id: options.requestId,
     }),
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Gemini summary generation failed (${response.status}): ${text.slice(0, 400)}`);
+    const payload = await response.json().catch(() => ({}));
+    const error = new Error(payload.detail || `LangGraph summary generation failed (${response.status}).`);
+    error.statusCode = response.status;
+    throw error;
   }
 
-  const payload = await response.json();
-  const rawSummary = payload?.candidates?.[0]?.content?.parts
-    ?.map((part) => part.text)
-    .join('\n') || '';
-
-  return parseGeminiSummaryResponse(rawSummary);
+  return response.json();
 }
 
 module.exports = {
   fetchTranscript,
   generateSummaryFromTranscript,
-  parseGeminiSummaryResponse,
+  selectSummaryTranscript,
 };

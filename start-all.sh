@@ -6,7 +6,6 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RAG_DIR="$ROOT_DIR/rag-service"
 BACKEND_DIR="$ROOT_DIR/backend-node"
 FRONTEND_DIR="$ROOT_DIR/frontend"
-RAG_VENV_PYTHON="$RAG_DIR/.venv/bin/python"
 
 cd "$ROOT_DIR"
 
@@ -20,12 +19,8 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-if command -v python3.12 >/dev/null 2>&1; then
-  PYTHON_BIN="python3.12"
-elif command -v python >/dev/null 2>&1; then
-  PYTHON_BIN="python"
-else
-  echo "Python is required but not installed or not on PATH."
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv is required but not installed or not on PATH. See https://docs.astral.sh/uv/getting-started/installation/"
   exit 1
 fi
 
@@ -33,16 +28,12 @@ if command -v lsof >/dev/null 2>&1; then
   lsof -ti :4000 | xargs -r kill -9 || true
 fi
 
-if [ ! -f "$RAG_VENV_PYTHON" ]; then
-  "$PYTHON_BIN" -m venv "$RAG_DIR/.venv"
-fi
-
-"$RAG_VENV_PYTHON" -m pip install -r "$RAG_DIR/requirements.txt"
+uv sync --project "$RAG_DIR"
 
 echo "Starting RAG service..."
 (
   cd "$RAG_DIR"
-  "$RAG_VENV_PYTHON" -m uvicorn main:app --host 0.0.0.0 --port 8001
+  uv run --project "$RAG_DIR" uvicorn main:app --host 0.0.0.0 --port 8001
 ) &
 
 RAG_PID=$!

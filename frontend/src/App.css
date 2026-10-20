@@ -305,6 +305,10 @@
   color: #dfe9f4;
 }
 
+.import-form .input-row label {
+  flex: 1;
+}
+
 .input-row {
   display: flex;
   gap: 12px;

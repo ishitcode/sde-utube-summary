@@ -1,24 +1,24 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseGeminiSummaryResponse } = require('../src/services/llmSummary');
+const { selectSummaryTranscript } = require('../src/services/llmSummary');
 
-test('parses Gemini JSON summary response into app summary shape', () => {
-  const raw = [
-    'Here is the summary:',
-    '```json',
-    '{',
-    '  "quick_summary": "This lecture explains the core idea in a structured way.",',
-    '  "detailed_notes": ["A clear note", "A second note"],',
-    '  "key_concepts": ["Idea", "Practice"],',
-    '  "timestamp_references": [{"start": 0, "end": 20, "label": "Intro"}]',
-    '}',
-    '```',
-    '',
-  ].join('\n');
+test('selects transcript segments overlapping the requested summary range', () => {
+  const transcript = [
+    { text: 'opening', start: 0, end: 10 },
+    { text: 'middle', start: 10, end: 20 },
+    { text: 'closing', start: 20, end: 30 },
+  ];
 
-  const parsed = parseGeminiSummaryResponse(raw);
-  assert.equal(parsed.quick_summary.includes('core idea'), true);
-  assert.deepEqual(parsed.key_concepts, ['Idea', 'Practice']);
-  assert.equal(parsed.timestamp_references[0].label, 'Intro');
+  assert.deepEqual(selectSummaryTranscript(transcript, 9, 21), transcript);
+  assert.deepEqual(selectSummaryTranscript(transcript, 10, 20), [transcript[1]]);
+  assert.deepEqual(selectSummaryTranscript(transcript), transcript);
+});
+
+test('rejects incomplete or invalid summary ranges', () => {
+  const transcript = [{ text: 'opening', start: 0, end: 10 }];
+
+  assert.throws(() => selectSummaryTranscript(transcript, 0), /Both summary start and end/);
+  assert.throws(() => selectSummaryTranscript(transcript, 10, 5), /greater than/);
+  assert.throws(() => selectSummaryTranscript(transcript, 20, 30), /No transcript/);
 });
